@@ -1,9 +1,10 @@
 'use strict';
-// GitHub Lite - vanilla JS client for issues and PRs. Targets old browsers (iOS 16 Safari):
+// GitHub Lite - vanilla JS client for issues and PRs. Targets very old browsers (iOS 12 Safari):
 // no modules, no frameworks, Bootstrap classes only for styling.
+// Stick to ES2018 syntax: no ?? (nullish coalescing) or ?. (optional chaining) — use || and && instead.
 
 const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nl2br = s => esc(s).replace(/\n/g, '<br>');
 const when = d => new Date(d).toLocaleString();
 
@@ -12,7 +13,7 @@ const when = d => new Date(d).toLocaleString();
 let st = { tab: 'pr', state: 'open', view: 'list', num: 0, pending: [], sel: null, data: null };
 
 function go(view, num) {
-  st = Object.assign({}, st, { view, num: num ?? 0, pending: [], sel: null, data: null });
+  st = Object.assign({}, st, { view, num: num || 0, pending: [], sel: null, data: null });
   render();
 }
 
@@ -24,11 +25,11 @@ function rerender() {
 
 async function api(path, method, body) {
   const r = await fetch('https://api.github.com/repos/' + localStorage.ghRepo + path, {
-    method: method ?? 'GET',
+    method: method || 'GET',
     headers: { Authorization: 'Bearer ' + localStorage.ghToken, Accept: 'application/vnd.github+json' },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!r.ok) throw new Error((method ?? 'GET') + ' ' + path + ' failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
+  if (!r.ok) throw new Error((method || 'GET') + ' ' + path + ' failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
   return r.status === 204 ? null : r.json();
 }
 
@@ -39,22 +40,22 @@ const stBadge = it => it.state === 'open'
 const ciColor = c => ({
   success: 'success', failure: 'danger', error: 'danger', timed_out: 'danger',
   pending: 'warning', in_progress: 'warning', queued: 'warning', action_required: 'warning'
-}[c] ?? 'secondary');
+}[c] || 'secondary');
 
 const card = (user, date, body, extra) =>
   '<div class="card mb-2"><div class="card-body p-2">' +
-  '<div class="small text-muted">' + esc(user) + ' · ' + when(date) + (extra ?? '') + '</div>' +
+  '<div class="small text-muted">' + esc(user) + ' · ' + when(date) + (extra || '') + '</div>' +
   '<div class="text-break">' + nl2br(body) + '</div></div></div>';
 
 const btn = (cls, action, extra, label) =>
-  '<button class="btn btn-sm ' + cls + '" data-action="' + action + '" ' + (extra ?? '') + '>' + label + '</button>';
+  '<button class="btn btn-sm ' + cls + '" data-action="' + action + '" ' + (extra || '') + '>' + label + '</button>';
 
 function shell(inner) {
   const tabBtn = (tab, label) => btn('btn' + (st.tab === tab ? '' : '-outline') + '-primary', 'tab', 'data-tab="' + tab + '"', label);
   const filterBtn = (state, label) => btn('btn' + (st.state === state ? '' : '-outline') + '-secondary', 'filter', 'data-state="' + state + '"', label);
   $('#app').innerHTML =
     '<div class="d-flex align-items-center gap-2 mb-2 flex-wrap">' +
-    '<strong>' + esc(localStorage.ghRepo ?? '') + '</strong>' +
+    '<strong>' + esc(localStorage.ghRepo || '') + '</strong>' +
     '<div class="btn-group btn-group-sm">' + tabBtn('pr', 'PRs') + tabBtn('issue', 'Issues') + '</div>' +
     '<div class="btn-group btn-group-sm">' + filterBtn('open', 'Open') + filterBtn('closed', 'Closed') + '</div>' +
     btn('btn-outline-success', 'new', '', 'New issue') +
@@ -68,9 +69,9 @@ async function render() {
     $('#app').innerHTML =
       '<h5 class="mt-3">GitHub Lite</h5>' +
       '<label class="form-label small mb-0">Repository (owner/repo)</label>' +
-      '<input id="srepo" class="form-control mb-2" value="' + esc(localStorage.ghRepo ?? '') + '">' +
+      '<input id="srepo" class="form-control mb-2" value="' + esc(localStorage.ghRepo || '') + '">' +
       '<label class="form-label small mb-0">Personal access token</label>' +
-      '<input id="stoken" type="password" class="form-control mb-2" value="' + esc(localStorage.ghToken ?? '') + '">' +
+      '<input id="stoken" type="password" class="form-control mb-2" value="' + esc(localStorage.ghToken || '') + '">' +
       btn('btn-primary', 'savesetup', '', 'Save');
     return;
   }
@@ -93,7 +94,7 @@ async function listHtml() {
     '<div class="d-flex justify-content-between gap-2"><span class="text-break"><strong>#' + i.number + '</strong> ' + esc(i.title) + '</span>' +
     '<small class="text-muted text-nowrap">' + when(i.updated_at) + '</small></div>' +
     '<small class="text-muted">' + esc(i.user.login) + (i.draft ? ' · draft' : '') +
-    (i.labels ?? []).map(l => ' <span class="badge text-bg-secondary">' + esc(l.name) + '</span>').join('') +
+    (i.labels || []).map(l => ' <span class="badge text-bg-secondary">' + esc(l.name) + '</span>').join('') +
     '</small></a>').join('') + '</div>';
 }
 
@@ -116,7 +117,7 @@ async function prHtml() {
       api('/commits/' + pr.head.sha + '/check-runs').catch(() => ({ check_runs: [] })),
       api('/commits/' + pr.head.sha + '/status').catch(() => ({ statuses: [] }))
     ]);
-    st.data = { pr, comments, rcomments, files, ci: checks.check_runs.map(c => ({ name: c.name, res: c.conclusion ?? c.status })).concat(status.statuses.map(s => ({ name: s.context, res: s.state }))) };
+    st.data = { pr, comments, rcomments, files, ci: checks.check_runs.map(c => ({ name: c.name, res: c.conclusion || c.status })).concat(status.statuses.map(s => ({ name: s.context, res: s.state }))) };
   }
   const { pr, comments, rcomments, files, ci } = st.data;
   return backBtn +
@@ -150,7 +151,7 @@ const lineBox = () =>
 
 function fileHtml(f) {
   let old = 0, nw = 0;
-  const lines = (f.patch ?? '').split('\n').map(l => {
+  const lines = (f.patch || '').split('\n').map(l => {
     let cls = '', ln = 0, side = '';
     if (l.startsWith('@@')) {
       const m = /-(\d+)(?:,\d+)? \+(\d+)/.exec(l);
