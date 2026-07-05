@@ -368,7 +368,10 @@ const actions = {
 
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-action]');
-  if (!t) return;
+  // Forms carry data-action so the submit listener below can find it; ignore it
+  // here or any tap/click landing inside the form (e.g. focusing the search
+  // input or opening the sort <select>) would bubble up and fire the action.
+  if (!t || t.tagName === 'FORM') return;
   const a = actions[t.dataset.action];
   if (!a) return;
   e.preventDefault();
