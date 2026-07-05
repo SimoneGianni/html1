@@ -5,8 +5,15 @@
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const nl2br = s => esc(s).replace(/\n/g, '<br>');
 const when = d => new Date(d).toLocaleString();
+
+// Markdown rendering via markdown-it. html:false escapes any raw HTML in the
+// source, so untrusted issue/PR/comment bodies stay XSS-safe without a separate
+// sanitizer; breaks:true keeps single newlines as <br> (old nl2br behavior);
+// linkify:true auto-links bare URLs.
+const md = window.markdownit({ html: false, linkify: true, breaks: true });
+const mdBlock = s => md.render(String(s == null ? '' : s));
+const mdInline = s => md.renderInline(String(s == null ? '' : s));
 
 // view: setup | list | pr | issue | new; data caches fetched detail so UI-only
 // re-renders (line selection, pending review edits) do not refetch.
@@ -45,7 +52,7 @@ const ciColor = c => ({
 const card = (user, date, body, extra) =>
   '<div class="card mb-2"><div class="card-body p-2">' +
   '<div class="small text-muted">' + esc(user) + ' · ' + when(date) + (extra || '') + '</div>' +
-  '<div class="text-break">' + nl2br(body) + '</div></div></div>';
+  '<div class="text-break md-body">' + mdBlock(body) + '</div></div></div>';
 
 const btn = (cls, action, extra, label) =>
   '<button class="btn btn-sm ' + cls + '" data-action="' + action + '" ' + (extra || '') + '>' + label + '</button>';
@@ -173,7 +180,7 @@ function fileHtml(f) {
 function pendingHtml() {
   if (!st.pending.length) return '<div class="text-muted small mb-2">No pending review comments.</div>';
   return st.pending.map((p, i) =>
-    '<div class="alert alert-warning p-2 mb-1 small text-break"><code>' + esc(p.path) + ':' + p.line + '</code> — ' + nl2br(p.body) +
+    '<div class="alert alert-warning p-2 mb-1 small text-break"><code>' + esc(p.path) + ':' + p.line + '</code> — ' + mdInline(p.body) +
     ' <button class="btn btn-sm btn-link p-0 align-baseline" data-action="rmpending" data-i="' + i + '">remove</button></div>').join('');
 }
 
