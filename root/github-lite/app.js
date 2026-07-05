@@ -48,7 +48,13 @@ async function gqlApi(query, variables) {
     body: JSON.stringify({ query: query, variables: variables })
   });
   const j = await r.json();
-  if (!r.ok || j.errors) throw new Error('GraphQL request failed: ' + (j.errors ? j.errors.map(e => e.message).join('; ') : r.status));
+  if (!r.ok || j.errors) {
+    const msg = j.errors ? j.errors.map(e => e.message).join('; ') : String(r.status);
+    const hint = /not accessible by personal access token/i.test(msg)
+      ? ' — fine-grained PATs cannot run this GraphQL mutation yet; use a classic PAT with the "repo" scope instead.'
+      : '';
+    throw new Error('GraphQL request failed: ' + msg + hint);
+  }
   return j.data;
 }
 
