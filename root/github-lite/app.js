@@ -40,6 +40,18 @@ async function api(path, method, body) {
   return r.status === 204 ? null : r.json();
 }
 
+// Marking a draft PR ready for review has no REST endpoint; it's GraphQL-only.
+async function gqlApi(query, variables) {
+  const r = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + localStorage.ghToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query, variables: variables })
+  });
+  const j = await r.json();
+  if (!r.ok || j.errors) throw new Error('GraphQL request failed: ' + (j.errors ? j.errors.map(e => e.message).join('; ') : r.status));
+  return j.data;
+}
+
 const stBadge = it => it.state === 'open'
   ? '<span class="badge text-bg-success">open</span>'
   : '<span class="badge text-bg-' + (it.merged_at ? 'primary">merged' : 'secondary">closed') + '</span>';
@@ -131,6 +143,7 @@ async function prHtml() {
     '<h5>#' + pr.number + ' ' + esc(pr.title) + ' ' + stBadge(pr) + (pr.draft ? ' <span class="badge text-bg-light">draft</span>' : '') + '</h5>' +
     '<div class="small text-muted mb-2">' + esc(pr.user.login) + ' · ' + esc(pr.head.ref) + ' → ' + esc(pr.base.ref) + ' · updated ' + when(pr.updated_at) + '</div>' +
     (ci.length ? '<div class="mb-2">' + ci.map(c => '<span class="badge text-bg-' + ciColor(c.res) + ' me-1 mb-1">' + esc(c.name) + ': ' + esc(c.res) + '</span>').join('') + '</div>' : '') +
+    (pr.state === 'open' ? mergeHtml(pr) : '') +
     (pr.body ? card(pr.user.login, pr.created_at, pr.body) : '') +
     '<h6 class="mt-3">Conversation (' + comments.length + ')</h6>' +
     (comments.map(c => card(c.user.login, c.created_at, c.body)).join('') || '<div class="text-muted small">No comments</div>') +
@@ -146,6 +159,19 @@ async function prHtml() {
     btn('btn-outline-success', 'review', 'data-event="APPROVE"', 'Approve') +
     btn('btn-outline-primary', 'review', 'data-event="COMMENT"', 'Comment') +
     btn('btn-outline-danger', 'review', 'data-event="REQUEST_CHANGES"', 'Request changes') +
+    '</div>';
+}
+
+// mergeable is null while GitHub is still computing it, false on conflicts;
+// draft PRs must be marked ready for review on GitHub before they can merge.
+function mergeHtml(pr) {
+  if (pr.draft) return '<div class="alert alert-secondary p-2 small mb-2">Draft PRs can\'t be merged until marked ready for review.</div>' +
+    '<div class="mb-2">' + btn('btn-outline-primary', 'readyforreview', '', 'Ready for review') + '</div>';
+  if (pr.mergeable === false) return '<div class="alert alert-danger p-2 small mb-2">This branch has conflicts that must be resolved before merging.</div>';
+  return '<div class="btn-group btn-group-sm mb-2">' +
+    btn('btn-success', 'merge', 'data-method="merge"', 'Merge') +
+    btn('btn-outline-success', 'merge', 'data-method="squash"', 'Squash & merge') +
+    btn('btn-outline-success', 'merge', 'data-method="rebase"', 'Rebase & merge') +
     '</div>';
 }
 
@@ -260,6 +286,20 @@ const actions = {
       comments: st.pending.map(p => ({ path: p.path, line: p.line, side: p.side, body: p.body }))
     });
     st.pending = []; st.data = null; render();
+  },
+  merge: async d => {
+    const label = { merge: 'a merge commit', squash: 'squash merge', rebase: 'rebase merge' }[d.method];
+    if (!confirm('Merge PR #' + st.num + ' using ' + label + '?')) return;
+    await api('/pulls/' + st.num + '/merge', 'PUT', { merge_method: d.method });
+    st.data = null; render();
+  },
+  readyforreview: async () => {
+    if (!confirm('Mark PR #' + st.num + ' as ready for review?')) return;
+    await gqlApi(
+      'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}',
+      { id: st.data.pr.node_id }
+    );
+    st.data = null; render();
   },
   savelabels: async () => {
     await api('/issues/' + st.num + '/labels', 'PUT', { labels: checkedLabels() });
