@@ -17,7 +17,11 @@ const mdInline = s => md.renderInline(String(s == null ? '' : s));
 
 // view: setup | list | pr | issue | new; data caches fetched detail so UI-only
 // re-renders (line selection, pending review edits) do not refetch.
-let st = { tab: 'pr', state: 'open', view: 'list', num: 0, pending: [], sel: null, data: null };
+// q/sort/dir drive the list view: q is a raw GitHub search-syntax query (routes
+// through the /search/issues API when non-empty), sort/dir mirror GitHub's own
+// issue/PR sort controls (created, updated, comments, best match - the last one
+// only meaningful for a search).
+let st = { tab: 'pr', state: 'open', view: 'list', num: 0, pending: [], sel: null, data: null, q: '', sort: 'created', dir: 'desc' };
 
 function go(view, num) {
   st = Object.assign({}, st, { view, num: num || 0, pending: [], sel: null, data: null });
@@ -38,6 +42,20 @@ async function api(path, method, body) {
   });
   if (!r.ok) throw new Error((method || 'GET') + ' ' + path + ' failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
   return r.status === 204 ? null : r.json();
+}
+
+// Search API is separate from the /repos/... REST endpoints and takes a free-form
+// `q` string, so it's the only way to support GitHub's full issue/PR search syntax.
+async function searchApi(q, sort, dir) {
+  const scoped = 'repo:' + localStorage.ghRepo + ' is:' + (st.tab === 'pr' ? 'pr' : 'issue') +
+    ' state:' + st.state + ' ' + q;
+  const url = '/search/issues?q=' + encodeURIComponent(scoped) + '&per_page=100' +
+    (sort === 'best' ? '' : '&sort=' + sort + '&order=' + dir);
+  const r = await fetch('https://api.github.com' + url, {
+    headers: { Authorization: 'Bearer ' + localStorage.ghToken, Accept: 'application/vnd.github+json' }
+  });
+  if (!r.ok) throw new Error('GET ' + url + ' failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
+  return (await r.json()).items;
 }
 
 // Marking a draft PR ready for review has no REST endpoint; it's GraphQL-only.
@@ -69,6 +87,23 @@ const card = (user, date, body, extra) =>
 const btn = (cls, action, extra, label) =>
   '<button class="btn btn-sm ' + cls + '" data-action="' + action + '" ' + (extra || '') + '>' + label + '</button>';
 
+const sortOpts = [['created', 'Created'], ['updated', 'Last updated'], ['comments', 'Total comments'], ['best', 'Best match']];
+
+function searchRow() {
+  if (st.view !== 'list') return '';
+  const opt = (v, label) => '<option value="' + v + '"' + (st.sort === v ? ' selected' : '') + '>' + label + '</option>';
+  return '<form class="d-flex align-items-center gap-2 mb-2 flex-wrap" data-action="search">' +
+    '<input id="squery" class="form-control form-control-sm" style="max-width:280px" placeholder="Search (GitHub search syntax)" value="' + esc(st.q) + '">' +
+    '<select id="ssort" class="form-select form-select-sm" style="max-width:170px">' + sortOpts.map(o => opt(o[0], o[1])).join('') + '</select>' +
+    '<select id="sdir" class="form-select form-select-sm" style="max-width:100px">' +
+    '<option value="desc"' + (st.dir !== 'asc' ? ' selected' : '') + '>Desc</option>' +
+    '<option value="asc"' + (st.dir === 'asc' ? ' selected' : '') + '>Asc</option>' +
+    '</select>' +
+    '<button type="submit" class="btn btn-sm btn-outline-primary">Search</button>' +
+    (st.q ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-action="clearsearch">Clear</button>' : '') +
+    '</form>';
+}
+
 function shell(inner) {
   const tabBtn = (tab, label) => btn('btn' + (st.tab === tab ? '' : '-outline') + '-primary', 'tab', 'data-tab="' + tab + '"', label);
   const filterBtn = (state, label) => btn('btn' + (st.state === state ? '' : '-outline') + '-secondary', 'filter', 'data-state="' + state + '"', label);
@@ -80,7 +115,7 @@ function shell(inner) {
     btn('btn-outline-success', 'new', '', 'New issue') +
     btn('btn-outline-secondary', 'refresh', '', '↻') +
     btn('btn-outline-secondary', 'setup', '', '⚙') +
-    '</div><div id="main">' + inner + '</div>';
+    '</div>' + searchRow() + '<div id="main">' + inner + '</div>';
 }
 
 async function render() {
@@ -104,9 +139,16 @@ async function render() {
 }
 
 async function listHtml() {
-  const items = st.tab === 'pr'
-    ? await api('/pulls?state=' + st.state + '&per_page=100')
-    : (await api('/issues?state=' + st.state + '&per_page=100')).filter(i => !i.pull_request);
+  let items;
+  if (st.q) {
+    items = await searchApi(st.q, st.sort, st.dir);
+  } else {
+    // "Best match" only exists for the search API; without a query fall back to created.
+    // The plain PR list endpoint also has no "comments" sort - "popularity" is its equivalent.
+    const sort = st.sort === 'best' ? 'created' : (st.tab === 'pr' && st.sort === 'comments' ? 'popularity' : st.sort);
+    const path = (st.tab === 'pr' ? '/pulls' : '/issues') + '?state=' + st.state + '&per_page=100&sort=' + sort + '&direction=' + st.dir;
+    items = st.tab === 'pr' ? await api(path) : (await api(path)).filter(i => !i.pull_request);
+  }
   if (!items.length) return '<div class="text-muted">Nothing here.</div>';
   return '<div class="list-group">' + items.map(i =>
     '<a href="#" class="list-group-item list-group-item-action" data-action="open" data-num="' + i.number + '">' +
@@ -261,6 +303,13 @@ const actions = {
   },
   tab: d => { st.tab = d.tab; go('list'); },
   filter: d => { st.state = d.state; go('list'); },
+  search: () => {
+    st.q = $('#squery').value.trim();
+    st.sort = $('#ssort').value;
+    st.dir = $('#sdir').value;
+    go('list');
+  },
+  clearsearch: () => { st.q = ''; st.sort = 'created'; st.dir = 'desc'; go('list'); },
   refresh: () => { st.data = null; render(); },
   new: () => go('new'),
   back: () => go('list'),
@@ -318,6 +367,16 @@ const actions = {
 };
 
 document.addEventListener('click', e => {
+  const t = e.target.closest('[data-action]');
+  if (!t) return;
+  const a = actions[t.dataset.action];
+  if (!a) return;
+  e.preventDefault();
+  Promise.resolve(a(t.dataset)).catch(err => alert(err.message));
+});
+
+// Lets Enter in the search box submit without clicking the Search button.
+document.addEventListener('submit', e => {
   const t = e.target.closest('[data-action]');
   if (!t) return;
   const a = actions[t.dataset.action];
