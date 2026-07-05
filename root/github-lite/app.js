@@ -40,6 +40,18 @@ async function api(path, method, body) {
   return r.status === 204 ? null : r.json();
 }
 
+// Marking a draft PR ready for review has no REST endpoint; it's GraphQL-only.
+async function gqlApi(query, variables) {
+  const r = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + localStorage.ghToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query, variables: variables })
+  });
+  const j = await r.json();
+  if (!r.ok || j.errors) throw new Error('GraphQL request failed: ' + (j.errors ? j.errors.map(e => e.message).join('; ') : r.status));
+  return j.data;
+}
+
 const stBadge = it => it.state === 'open'
   ? '<span class="badge text-bg-success">open</span>'
   : '<span class="badge text-bg-' + (it.merged_at ? 'primary">merged' : 'secondary">closed') + '</span>';
@@ -153,7 +165,8 @@ async function prHtml() {
 // mergeable is null while GitHub is still computing it, false on conflicts;
 // draft PRs must be marked ready for review on GitHub before they can merge.
 function mergeHtml(pr) {
-  if (pr.draft) return '<div class="alert alert-secondary p-2 small mb-2">Draft PRs can\'t be merged until marked ready for review.</div>';
+  if (pr.draft) return '<div class="alert alert-secondary p-2 small mb-2">Draft PRs can\'t be merged until marked ready for review.</div>' +
+    '<div class="mb-2">' + btn('btn-outline-primary', 'readyforreview', '', 'Ready for review') + '</div>';
   if (pr.mergeable === false) return '<div class="alert alert-danger p-2 small mb-2">This branch has conflicts that must be resolved before merging.</div>';
   return '<div class="btn-group btn-group-sm mb-2">' +
     btn('btn-success', 'merge', 'data-method="merge"', 'Merge') +
@@ -278,6 +291,14 @@ const actions = {
     const label = { merge: 'a merge commit', squash: 'squash merge', rebase: 'rebase merge' }[d.method];
     if (!confirm('Merge PR #' + st.num + ' using ' + label + '?')) return;
     await api('/pulls/' + st.num + '/merge', 'PUT', { merge_method: d.method });
+    st.data = null; render();
+  },
+  readyforreview: async () => {
+    if (!confirm('Mark PR #' + st.num + ' as ready for review?')) return;
+    await gqlApi(
+      'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}',
+      { id: st.data.pr.node_id }
+    );
     st.data = null; render();
   },
   savelabels: async () => {
