@@ -15,13 +15,13 @@ const md = window.markdownit({ html: false, linkify: true, breaks: true });
 const mdBlock = s => md.render(String(s == null ? '' : s));
 const mdInline = s => md.renderInline(String(s == null ? '' : s));
 
-// view: setup | list | pr | issue | new; data caches fetched detail so UI-only
-// re-renders (line selection, pending review edits) do not refetch.
+// view: setup | repos | list | pr | issue | new; data caches fetched detail so UI-only
+// re-renders (line selection, pending review edits, repo filtering) do not refetch.
 // q/sort/dir drive the list view: q is a raw GitHub search-syntax query (routes
 // through the /search/issues API when non-empty), sort/dir mirror GitHub's own
 // issue/PR sort controls (created, updated, comments, best match - the last one
 // only meaningful for a search).
-let st = { tab: 'pr', state: 'open', view: 'list', num: 0, pending: [], sel: null, data: null, q: '', sort: 'created', dir: 'desc' };
+let st = { tab: 'pr', state: 'open', view: 'list', num: 0, pending: [], sel: null, data: null, q: '', sort: 'created', dir: 'desc', repoQ: '' };
 
 function go(view, num) {
   st = Object.assign({}, st, { view, num: num || 0, pending: [], sel: null, data: null });
@@ -42,6 +42,16 @@ async function api(path, method, body) {
   });
   if (!r.ok) throw new Error((method || 'GET') + ' ' + path + ' failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
   return r.status === 204 ? null : r.json();
+}
+
+// Repos accessible to the token (classic PATs: all granted scopes; fine-grained
+// PATs: only the repos the token was scoped to). Used to populate the repo picker.
+async function reposApi() {
+  const r = await fetch('https://api.github.com/user/repos?per_page=100&sort=pushed&direction=desc', {
+    headers: { Authorization: 'Bearer ' + localStorage.ghToken, Accept: 'application/vnd.github+json' }
+  });
+  if (!r.ok) throw new Error('GET /user/repos failed (' + r.status + '): ' + (await r.text()).slice(0, 300));
+  return r.json();
 }
 
 // Search API is separate from the /repos/... REST endpoints and takes a free-form
@@ -114,19 +124,32 @@ function shell(inner) {
     '<div class="btn-group btn-group-sm">' + filterBtn('open', 'Open') + filterBtn('closed', 'Closed') + '</div>' +
     btn('btn-outline-success', 'new', '', 'New issue') +
     btn('btn-outline-secondary', 'refresh', '', '↻') +
+    btn('btn-outline-secondary', 'switchrepo', '', '⇄') +
     btn('btn-outline-secondary', 'setup', '', '⚙') +
     '</div>' + searchRow() + '<div id="main">' + inner + '</div>';
 }
 
 async function render() {
-  if (st.view === 'setup' || !localStorage.ghRepo || !localStorage.ghToken) {
+  if (st.view === 'setup' || !localStorage.ghToken) {
     $('#app').innerHTML =
       '<h5 class="mt-3">GitHub Lite</h5>' +
-      '<label class="form-label small mb-0">Repository (owner/repo)</label>' +
-      '<input id="srepo" class="form-control mb-2" value="' + esc(localStorage.ghRepo || '') + '">' +
       '<label class="form-label small mb-0">Personal access token</label>' +
       '<input id="stoken" type="password" class="form-control mb-2" value="' + esc(localStorage.ghToken || '') + '">' +
       btn('btn-primary', 'savesetup', '', 'Save');
+    return;
+  }
+  if (st.view === 'repos' || !localStorage.ghRepo) {
+    $('#app').innerHTML =
+      '<div class="d-flex align-items-center gap-2 mb-2">' +
+      '<strong>' + esc(localStorage.ghRepo || 'Select a repository') + '</strong>' +
+      (localStorage.ghRepo ? btn('btn-outline-secondary', 'cancelrepos', '', '← back') : '') +
+      btn('btn-outline-secondary', 'setup', '', '⚙') +
+      '</div><div id="main">Loading…</div>';
+    try {
+      $('#main').innerHTML = await reposHtml();
+    } catch (e) {
+      $('#main').innerHTML = '<div class="alert alert-danger text-break">' + esc(e.message) + '</div>';
+    }
     return;
   }
   shell('<div class="text-muted">Loading…</div>');
@@ -136,6 +159,32 @@ async function render() {
   } catch (e) {
     $('#main').innerHTML = '<div class="alert alert-danger text-break">' + esc(e.message) + '</div>';
   }
+}
+
+async function reposHtml() {
+  if (!st.data) st.data = { repos: await reposApi() };
+  const repos = st.data.repos;
+  const filtered = st.repoQ
+    ? repos.filter(r => r.full_name.toLowerCase().indexOf(st.repoQ.toLowerCase()) !== -1)
+    : repos;
+  return '<form class="d-flex align-items-center gap-2 mb-2 flex-wrap" data-action="filterrepos">' +
+    '<input id="rquery" class="form-control form-control-sm" style="max-width:280px" placeholder="Filter repos" value="' + esc(st.repoQ) + '">' +
+    '<button type="submit" class="btn btn-sm btn-outline-primary">Filter</button>' +
+    (st.repoQ ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-action="clearrepofilter">Clear</button>' : '') +
+    '</form>' +
+    '<div class="list-group mb-3">' + filtered.map(r =>
+      '<a href="#" class="list-group-item list-group-item-action" data-action="selectrepo" data-repo="' + esc(r.full_name) + '">' +
+      '<div class="d-flex justify-content-between gap-2"><span class="text-break">' + esc(r.full_name) +
+      (r.private ? ' <span class="badge text-bg-secondary">private</span>' : '') + '</span>' +
+      '<small class="text-muted text-nowrap">' + when(r.pushed_at) + '</small></div>' +
+      (r.description ? '<small class="text-muted text-break">' + esc(r.description) + '</small>' : '') +
+      '</a>').join('') + '</div>' +
+    (!filtered.length ? '<div class="text-muted mb-2">No repos match.</div>' : '') +
+    '<label class="form-label small mb-0">Or enter manually (owner/repo)</label>' +
+    '<div class="input-group input-group-sm mb-3">' +
+    '<input id="rmanual" class="form-control" placeholder="owner/repo">' +
+    btn('btn-outline-primary', 'selectrepomanual', '', 'Use') +
+    '</div>';
 }
 
 async function listHtml() {
@@ -297,10 +346,20 @@ const checkedLabels = () => Array.prototype.slice.call(document.querySelectorAll
 const actions = {
   setup: () => { st.view = 'setup'; render(); },
   savesetup: () => {
-    localStorage.ghRepo = $('#srepo').value.trim();
     localStorage.ghToken = $('#stoken').value.trim();
+    go(localStorage.ghRepo ? 'list' : 'repos');
+  },
+  switchrepo: () => { st.repoQ = ''; go('repos'); },
+  cancelrepos: () => go('list'),
+  selectrepo: d => { localStorage.ghRepo = d.repo; go('list'); },
+  selectrepomanual: () => {
+    const v = $('#rmanual').value.trim();
+    if (!v) return;
+    localStorage.ghRepo = v;
     go('list');
   },
+  filterrepos: () => { st.repoQ = $('#rquery').value.trim(); render(); },
+  clearrepofilter: () => { st.repoQ = ''; render(); },
   tab: d => { st.tab = d.tab; go('list'); },
   filter: d => { st.state = d.state; go('list'); },
   search: () => {
