@@ -207,14 +207,15 @@ async function prHtml() {
 // mergeable is null while GitHub is still computing it, false on conflicts;
 // draft PRs must be marked ready for review on GitHub before they can merge.
 function mergeHtml(pr) {
+  const closeBtn = '<div class="mb-2">' + btn('btn-outline-danger', 'closepr', '', 'Close without merging') + '</div>';
   if (pr.draft) return '<div class="alert alert-secondary p-2 small mb-2">Draft PRs can\'t be merged until marked ready for review.</div>' +
-    '<div class="mb-2">' + btn('btn-outline-primary', 'readyforreview', '', 'Ready for review') + '</div>';
-  if (pr.mergeable === false) return '<div class="alert alert-danger p-2 small mb-2">This branch has conflicts that must be resolved before merging.</div>';
+    '<div class="mb-2">' + btn('btn-outline-primary', 'readyforreview', '', 'Ready for review') + '</div>' + closeBtn;
+  if (pr.mergeable === false) return '<div class="alert alert-danger p-2 small mb-2">This branch has conflicts that must be resolved before merging.</div>' + closeBtn;
   return '<div class="btn-group btn-group-sm mb-2">' +
     btn('btn-success', 'merge', 'data-method="merge"', 'Merge') +
     btn('btn-outline-success', 'merge', 'data-method="squash"', 'Squash & merge') +
     btn('btn-outline-success', 'merge', 'data-method="rebase"', 'Rebase & merge') +
-    '</div>';
+    '</div>' + closeBtn;
 }
 
 // Box shown under the tapped diff line; text-wrap resets the pre's white-space
@@ -340,6 +341,11 @@ const actions = {
     const label = { merge: 'a merge commit', squash: 'squash merge', rebase: 'rebase merge' }[d.method];
     if (!confirm('Merge PR #' + st.num + ' using ' + label + '?')) return;
     await api('/pulls/' + st.num + '/merge', 'PUT', { merge_method: d.method });
+    st.data = null; render();
+  },
+  closepr: async () => {
+    if (!confirm('Close PR #' + st.num + ' without merging?')) return;
+    await api('/issues/' + st.num, 'PATCH', { state: 'closed' });
     st.data = null; render();
   },
   readyforreview: async () => {
